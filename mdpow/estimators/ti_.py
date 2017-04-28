@@ -97,5 +97,9 @@ class TI(alchemlyb.estimators.TI):
         errors of correlated data
         """
 
-        return
-        #variances = np.square(dHdl.sem(level=dHdl.index.names[1:]))
+        window_series = dHdl.iloc[dHdl.index.get_level_values('fep-lambda') == lmbda]
+        times = window_series.index.get_level_values('time')
+
+        tc = numkit.timeseries.tcorrel(window_series.values, times)
+
+        return tc['sigma']
