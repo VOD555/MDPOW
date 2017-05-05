@@ -48,6 +48,7 @@ class TI(alchemlyb.estimators.TI):
         # used to calculate mean
         means = dHdl.mean(level=dHdl.index.names[1:])
         variances = np.square(dHdl.sem(level=dHdl.index.names[1:]))
+        errors = self._correlated_error(dHdl)
 
         # obtain vector of delta lambdas between each state
         dl = means.reset_index()[means.index.names[:]].diff().iloc[1:].values
@@ -55,20 +56,25 @@ class TI(alchemlyb.estimators.TI):
         # apply trapezoid rule to obtain DF between each adjacent state
         deltas = (dl * (means.iloc[:-1].values + means.iloc[1:].values)/2).sum(axis=1)
         d_deltas = (dl**2 * (variances.iloc[:-1].values + variances.iloc[1:].values)/4).sum(axis=1)
+        d_deltas_errors = (dl**2 * (errors.iloc[:-1].values + errors.iloc[1:].values)/4).sum(axis=1)
 
         # build matrix of deltas between each state
         adelta = np.zeros((len(deltas)+1, len(deltas)+1))
         ad_delta = np.zeros_like(adelta)
+        ad_delta_errors = np.zeros_like(adelta)
 
         for j in range(len(deltas)):
             out = []
             dout = []
+            douterror = []
             for i in range(len(deltas) - j):
                 out.append(deltas[i] + deltas[i+1:i+j+1].sum())
                 dout.append(d_deltas[i] + d_deltas[i+1:i+j+1].sum())
+                douterror.append(d_deltas_errors[i] + d_deltas_errors[i+1:i+j+1].sum())
 
             adelta += np.diagflat(np.array(out), k=j+1)
             ad_delta += np.diagflat(np.array(dout), k=j+1)
+            ad_delta_errors += np.diagflat(np.array(douterror), k=j+1)
 
         # yield standard delta_f_ free energies between each state
         self.delta_f_ = pd.DataFrame(adelta - adelta.T,
@@ -80,26 +86,34 @@ class TI(alchemlyb.estimators.TI):
                                        columns=variances.index.values,
                                        index=variances.index.values)
 
+        self.d_delta_f_error_ = pd.DataFrame(np.sqrt(ad_delta_errors + ad_delta_errors.T),
+                                       columns=errors.index.values,
+                                       index=errors.index.values)
+
+
         return self
 
-    def _correlated_error(self, dHdl, lmbda):
+    def _correlated_error(dHdl):
         """Compute errors considering correlated data from time series.
 
         Parameters
         ----------
         dHdl : DataFrame
             dHdl is the time series of dHdl for a particular lambda window.
-        lmbda : float
-            The value of the lambda window
 
         Returns
         -------
         errors of correlated data
         """
 
-        window_series = dHdl.iloc[dHdl.index.get_level_values('fep-lambda') == lmbda]
-        times = window_series.index.get_level_values('time')
+        errors = []
+        lambdas = []
+        for name, group in dHdl.groupby(level='fep-lambda'):
+            tc = numkit.timeseries.tcorrel(group.index.get_level_values('time').values,
+                                           group.values.flatten())
+            lambdas.append(name)
+            errors.append(tc['sigma'])
 
-        tc = numkit.timeseries.tcorrel(window_series.values, times)
-
-        return tc['sigma']
+        return pd.DataFrame(errors,
+                            index=pd.Float64Index(lambdas, name='fep-lambda'),
+                            columns=['fep'])
