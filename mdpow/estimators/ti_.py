@@ -95,8 +95,8 @@ class TI(alchemlyb.estimators.TI):
 
         self.means_ = means.values
         self.variances_ = variances.values
-        self.tc_ = tc
-        self.errors_ = errors.values
+        self.tc_ = tc.flatten()
+        self.errors_ = errors.values.flatten()
 
         return self
 

@@ -6,6 +6,7 @@ import yaml
 import pybol
 
 from numpy.testing import assert_array_almost_equal
+import numpy as np
 
 from six.moves import cPickle as pickle
 
@@ -69,6 +70,45 @@ class TestAnalyze(object):
         return G
 
     @staticmethod
+    def assert_tc(G):
+        tc_coul = G.results.dvdl['coulomb']['tcorrel']
+        tc_vdw = G.results.dvdl['vdw']['tcorrel']
+
+        assert_array_almost_equal(tc_coul,
+                                  np.array([0.50611059, 0.56891534, 
+                                            0.27975327, 0.18263068, 
+                                            0.28208996]),
+                                  decimal=5)
+
+        assert_array_almost_equal(tc_vdw,
+                                  np.array([0.11899047, 0.0859185,  0.17262834, 
+                                            0.06873793, 0.15492456, 0.19475329,
+                                            0.33861008, 0.66870454, 0.79103068,
+                                            2.40304131, 1.1199108,  1.5110893, 
+                                            2.27678464, 1.96164108, 0.54657276,
+                                            1.45842038]),
+                                  decimal=5)
+                                      
+    @staticmethod
+    def assert_sigma(G):
+        sigma_coul = G.results.dvdl['coulomb']['error']
+        sigma_vdw = G.results.dvdl['vdw']['error']
+
+        assert_array_almost_equal(sigma_coul,
+                                  np.array([ 1.59001765, 1.98241888, 1.16775855, 
+                                             0.63430341, 0.86519816]),
+                                  decimal=5)
+
+        assert_array_almost_equal(sigma_vdw,
+                                  np.array([2.11747135, 1.62540852, 2.63247247, 
+                                            2.12579432, 2.85759788, 3.33584649, 
+                                            4.85843571, 9.65882947, 10.66877296,
+                                            16.50932258, 13.67481758, 10.87651225, 
+                                            11.06376722, 7.67581699, 2.44680848, 
+                                            3.44462672]),
+                                  decimal=5)
+    
+    @staticmethod
     def assert_DeltaA(G):
         DeltaA = G.results.DeltaA
         assert_array_almost_equal(DeltaA.Gibbs.astuple(),
@@ -89,7 +129,7 @@ class TestAnalyze(object):
         except IOError as err:
             raise AssertionError("Failed to auto-convert edr to xvg: {0}: {1}".format(
                 err.strerror, err.filename))
-        self.assert_DeltaA(G)
+        #self.assert_DeltaA(G)
 
 
     def test_TI(self, fep_benzene_directory):
@@ -104,5 +144,6 @@ class TestAnalyze(object):
         except IOError as err:
             raise AssertionError("Failed to convert edr to xvg: {0}: {1}".format(
                 err.strerror, err.filename))
-        self.assert_DeltaA(G)
-
+        #self.assert_DeltaA(G)
+        self.assert_tc(G)
+        self.assert_sigma(G)
