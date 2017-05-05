@@ -4,8 +4,8 @@
 # See the file COPYING for details.
 
 """
-:mod:`mdpow.config` -- Configuration for POW
-==========================================================
+:mod:`mdpow.config` -- Configuration for MDPOW
+==============================================
 
 The config module provides configurable options for the whole package;
 eventually it might grow into a more sophisticated configuration system but
@@ -119,6 +119,10 @@ class POWConfigParser(object):
     def readfp(self, fn):
         self.conf = yaml.load(fn)
         return True
+
+    def write(self, filename):
+        with open(filename, 'w') as f:
+            f.write(yaml.dump(self.conf))
 
     def get(self, section, option):
         """Return option, unless its "None" --> ``None``,

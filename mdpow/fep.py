@@ -127,9 +127,12 @@ import errno
 import copy
 from subprocess import call
 import warnings
-from pkg_resources import resource_filename
 
 import numpy
+
+import scipy.integrate
+import numkit.integration
+import numkit.timeseries
 
 import gromacs, gromacs.utilities
 try:
@@ -193,13 +196,13 @@ class FEPschedule(AttributeDict):
        couple_lambda1 = none
        # recommended values for soft cores (Mobley, Shirts et al)
        sc_alpha = 0.5
-       sc_power = 1.0
+       sc_power = 1
        sc_sigma = 0.3
        lambdas = 0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1
 
     """
     mdp_keywords = dict((('sc_alpha', float),
-                         ('sc_power', float),
+                         ('sc_power', int),
                          ('sc_sigma', float),
                          ('couple_lambda0', str),
                          ('couple_lambda1', str),
@@ -222,6 +225,7 @@ class FEPschedule(AttributeDict):
         keys.update(FEPschedule.other_keywords)
 
         cfg_get = {float: cfg.getfloat,
+                   int: cfg.getint,
                    str: cfg.getstr,    # literal strings, no conversion of None (which we need for the MDP!)
                    list: cfg.getarray  # numpy float array from list
                    }
@@ -292,22 +296,23 @@ class Gsolv(Journalled):
                                      label='Coul',
                                      couple_lambda0='vdw-q', couple_lambda1='vdw',
                                      sc_alpha=0,      # linear scaling for coulomb
-                                     lambdas=[0.0, 0.25, 0.5, 0.75, 1.0],  # default values
+                                     lambdas=numpy.array([0.0, 0.25, 0.5, 0.75, 1.0]),  # default values
                                  ),
                          'vdw':
                          FEPschedule(name='vdw',
                                      description="decoupling vdw --> none",
                                      label='VDW',
                                      couple_lambda0='vdw', couple_lambda1='none',
-                                     sc_alpha=0.5, sc_power=1.0, sc_sigma=0.3, # recommended values
-                                     lambdas=[0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6,  # defaults
-                                              0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1],
+                                     sc_alpha=0.5, sc_power=1, sc_sigma=0.3, # recommended values
+                                     lambdas=numpy.array([0.0, 0.05, 0.1, 0.2, 0.3,
+                                              0.4, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8,
+                                              0.85, 0.9, 0.95, 1]), # defaults
                                  ),
                      }
 
     #: Default Gromacs *MDP* run parameter file for FEP.
     #: (The file is part of the package and is found with :func:`mdpow.config.get_template`.)
-    mdp_default = 'fep_opls.mdp'
+    mdp_default = 'bar_opls.mdp'
 
 
     def __init__(self, molecule=None, top=None, struct=None, method="BAR", **kwargs):
@@ -385,8 +390,8 @@ class Gsolv(Journalled):
         required_args = ('molecule', 'top', 'struct')
 
         # should this be below somewhere?
-        if not method in ("TI", "BAR"):
-            raise ValueError("method can only be TI or BAR")
+        if not method in ("TI", "BAR", "MBAR"):
+            raise ValueError("method can only be TI, BAR, or MBAR")
         self.method = method
 
         filename = kwargs.pop('filename', None)
@@ -583,20 +588,9 @@ class Gsolv(Journalled):
         kwargs.setdefault('qscript', qscripts)
 
         for component, lambdas in self.lambdas.items():
-            if self.method == "TI":
-                for l in lambdas:
-                    # set up gromacs job for each FEP window in TI
-                    params = self._setup(component, l, **kwargs)
-            elif self.method == "BAR":
-                xlambdas = [None] + list(lambdas) + [None]
-                for l in lambdas:
-                    foreign_lambdas = [xlambdas[xlambdas.index(l) - 1],
-                                       xlambdas[xlambdas.index(l) + 1]]
-                    # set up gromacs job for each FEP window in BAR
-                    params = self._setup(component, l,
-                                         foreign_lambdas=foreign_lambdas, **kwargs)
-            else:
-                raise ValueError("Unknown method {}".format(self.method))
+            for l in lambdas:
+                params = self._setup(component, l,
+                                         foreign_lambdas=lambdas, **kwargs)
 
             # generate queuing system script for array job
             directories = [self.wdir(component, l) for l in lambdas]
@@ -612,7 +606,7 @@ class Gsolv(Journalled):
         params.pop('struct', None)   # scrub window-specific params
         return params
 
-    def _setup(self, component, lmbda, foreign_lambdas=None, **kwargs):
+    def _setup(self, component, lmbda, foreign_lambdas, **kwargs):
         """Prepare the input files for an individual Gromacs runs."""
 
         # note that all arguments pertinent to the submission scripts should be in kwargs
@@ -626,46 +620,31 @@ class Gsolv(Journalled):
         ###     I *must* keep "none" as a legal string value
         kwargs.update(self.schedules[component].mdp_dict)  # sets soft core & lambda0/1 state
 
-        # for BAR
-        if foreign_lambdas is not None:
-            # foreign_lambdas is only passed as an argument if BAR is
-            # desired method, defaults to TI otherwise
-            if foreign_lambdas[0] is None:
-                feplambdas = foreign_lambdas[1]
-            elif foreign_lambdas[1] is None:
-                feplambdas = foreign_lambdas[0]
-            else:
-                feplambdas = "{0} {1}".format(foreign_lambdas[0], foreign_lambdas[1])
-
-            kwargs.update(dirname=wdir, struct=self.struct, top=self.top,
-                          mdp=self.mdp,
-                          ndx=self.ndx,
-                          mainselection=None,
-                          runtime=self.runtime,
-                          ref_t=self.Temperature,    # TODO: maybe not working yet, check _setup()
-                          gen_temp=self.Temperature, # needed until gromacs.setup() is smarter
-                          qname=self.tasklabel(component,lmbda),
-                          free_energy='yes',
-                          couple_moltype=self.molecule,
-                          init_lambda=lmbda,
-                          fep_lambdas=feplambdas,
-                          )
-
-        # for TI
+        if kwargs.pop('edr', True):
+            logger.info('Setting dhdl file to edr format')
+            kwargs.setdefault('separate-dhdl-file', 'no')
         else:
-            kwargs.update(dirname=wdir, struct=self.struct, top=self.top,
-                          mdp=self.mdp,
-                          ndx=self.ndx,
-                          mainselection=None,
-                          runtime=self.runtime,
-                          ref_t=self.Temperature,    # TODO: maybe not working yet, check _setup()
-                          gen_temp=self.Temperature, # needed until gromacs.setup() is smarter
-                          qname=self.tasklabel(component,lmbda),
-                          free_energy='yes',
-                          couple_moltype=self.molecule,
-                          init_lambda=lmbda,
-                          delta_lambda=0,
-                          )
+            logger.info('Setting dhdl file to xvg format')
+            kwargs.setdefault('separate-dhdl-file', 'yes')
+
+        foreign_lambdas = numpy.asarray(foreign_lambdas)
+        lambda_index = numpy.where(foreign_lambdas == lmbda)[0][0]
+
+        kwargs.update(dirname=wdir, struct=self.struct, top=self.top,
+                      mdp=self.mdp,
+                      ndx=self.ndx,
+                      mainselection=None,
+                      runtime=self.runtime,
+                      ref_t=self.Temperature,    # TODO: maybe not working yet, check _setup()
+                      gen_temp=self.Temperature, # needed until gromacs.setup() is smarter
+                      qname=self.tasklabel(component,lmbda),
+                      free_energy='yes',
+                      couple_moltype=self.molecule,
+                      init_lambda_state=lambda_index,
+                      fep_lambdas=foreign_lambdas,
+                      calc_lambda_neighbors=-1,
+                      )
+
         return gromacs.setup.MD(**kwargs)
 
     def dgdl_xvg(self, *args):
@@ -673,7 +652,7 @@ class Gsolv(Journalled):
 
         Recognizes uncompressed, gzipped (gz), and bzip2ed (bz2)
         files.
-g
+
         :Arguments:
            *args*
                joins the arguments into a path and adds the default
@@ -694,6 +673,61 @@ g
                 return fn
         logger.error("Missing dgdl.xvg file %(root)r.", vars())
         raise IOError(errno.ENOENT, "Missing dgdl.xvg file", root)
+
+    def dgdl_edr(self, *args):
+        """Return filename of the dgdl EDR file.
+
+        :Arguments:
+           *args*
+               joins the arguments into a path and adds the default
+               filename for the dvdl file
+
+        :Returns: path to EDR
+
+        :Raises: :exc:`IOError` with error code ENOENT if no file
+                 could be found
+
+         """
+        fn = os.path.join(*args + (self.deffnm + '.edr',))
+        if not os.path.exists(fn):
+            logger.error("Missing dgdl.edr file %(fn)r.", vars())
+            raise IOError(errno.ENOENT, "Missing dgdl.edr file", fn)
+        return fn
+
+    def dgdl_tpr(self, *args):
+        """Return filename of the dgdl TPR file.
+
+        :Arguments:
+           *args*
+               joins the arguments into a path and adds the default
+               filename for the dvdl file
+
+        :Returns: path to TPR
+
+        :Raises: :exc:`IOError` with error code ENOENT if no file
+                 could be found
+
+         """
+        fn = os.path.join(*args + (self.deffnm + '.tpr',))
+        if not os.path.exists(fn):
+            logger.error("Missing TPR file %(fn)r.", vars())
+            raise IOError(errno.ENOENT, "Missing TPR file", fn)
+        return fn
+
+
+    def convert_edr(self):
+        """Convert EDR files to compressed XVG files."""
+
+        logger.info("[%(dirname)s] Converting EDR -> XVG.bz2" % vars(self))
+
+        for component, lambdas in self.lambdas.items():
+            edr_files = [self.dgdl_edr(self.wdir(component, l)) for l in lambdas]
+            tpr_files = [self.dgdl_tpr(self.wdir(component, l)) for l in lambdas]
+            for tpr, edr in zip(tpr_files, edr_files):
+                deffnm = os.path.splitext(edr)[0]
+                xvgfile = deffnm + ".xvg"  # hack
+                logger.info("  {0} --> {1}".format(edr, xvgfile))
+                gromacs.g_energy(s=tpr, f=edr, odh=xvgfile)
 
     def collect(self, stride=None, autosave=True, autocompress=True):
         """Collect dV/dl from output.
@@ -723,7 +757,8 @@ g
             xvg_files = [self.dgdl_xvg(self.wdir(component, l)) for l in lambdas]
             self.results.xvg[component] = (numpy.array(lambdas),
                                            [XVG(xvg, permissive=self.permissive, stride=self.stride)
-                                            for xvg in xvg_files])
+                                            for xvg in xvg_files],
+                                            xvg_files)
         if autosave:
             self.save()
 
@@ -775,12 +810,12 @@ g
                 return 0            # ... so we cannot conclude that it does contain bad ones
         corrupted = {}
         self._corrupted = {}        # debugging ...
-        for component, (lambdas, xvgs) in self.results.xvg.items():
+        for component, (lambdas, xvgs, filenames) in self.results.xvg.items():
             corrupted[component] = numpy.any([(_lencorrupted(xvg) > 0) for xvg in xvgs])
             self._corrupted[component] = dict(((l, _lencorrupted(xvg)) for l,xvg in izip(lambdas, xvgs)))
         return numpy.any([x for x in corrupted.values()])
 
-    def analyze(self, force=False, stride=None, autosave=True):
+    def analyze(self, force=False, stride=None, autosave=True, ncorrel=25000):
         """Extract dV/dl from output and calculate dG by TI.
 
         Thermodynamic integration (TI) is performed on the individual
@@ -810,8 +845,9 @@ g
         Errors are estimated from the errors of the individual <dV/dlambda>:
 
          1. The error of the mean <dV/dlambda> is calculated via the decay time
-            of the fluctuation around the mean (see
-            :attr:`gromacs.formats.XVG.error`).
+            of the fluctuation around the mean. ``ncorrel`` is the max number of
+            samples that is going to be used to calculate the autocorrelation
+            time via a FFT. See :func:`numkit.timeseries.tcorrel`.
 
          2. The error on the integral is calculated analytically via
             propagation of errors through Simpson's rule (with the
@@ -837,38 +873,66 @@ g
               read data every *stride* lines, ``None`` uses the class default
           *autosave*
               save to the pickle file when results have been computed
+          *ncorrel*
+              aim for <= 25,000 samples for t_correl
+
+        ..rubric:: Notes
+
+        Error on the mean of the data, taking the correlation time into account.
+
+        See [FrenkelSmit2002]_ `p526`_:
+
+           error = sqrt(2*tc*acf[0]/T)
+
+        where acf() is the autocorrelation function of the fluctuations around
+        the mean, y-<y>, tc is the correlation time, and T the total length of
+        the simulation.
+
+        .. [FrenkelSmit2002] D. Frenkel and B. Smit, Understanding
+                             Molecular Simulation. Academic Press, San
+                             Diego 2002
+
+        .. _p526: http://books.google.co.uk/books?id=XmyO2oRUg0cC&pg=PA526
         """
 
-        import scipy.integrate
-        import numkit.integration
+        from alchemlyb.parsing import gmx
+        from mdpow.estimators import TI
+        import pandas as pd
 
         stride = stride or self.stride
 
         if force or not self.has_dVdl():
-            self.collect(stride=stride, autosave=False)
+            try:
+                self.collect(stride=stride, autosave=False)
+            except IOError as err:
+                if err.errno == errno.ENOENT:
+                    self.convert_edr()
+                    self.collect(stride=stride, autosave=False)
+                else:
+                    logger.exception()
+                    raise
         else:
             logger.info("Analyzing stored data.")
 
-        # total free energy difference at const P (all simulations are done in NPT)
         GibbsFreeEnergy = QuantityWithError(0,0)
 
-        for component, (lambdas, xvgs) in self.results.xvg.items():
+        for component, (lambdas, xvgs, filenames) in self.results.xvg.items():
+
+            dHdl = pd.concat([gmx.extract_dHdl(f, T=300) for f in filenames])
+            dHdl = dHdl * 300 * kBOLTZ # undo dimensionless conversion from extract_dHdl
+            ti = TI()
+            ti.fit(dHdl, ncorrel=ncorrel)
+
+            self.results.dvdl[component] = {'lambdas':lambdas, 'mean':ti.means_, 
+                                            'error':ti.errors_,
+                                            'stddev':np.sqrt(ti.variances_), 
+                                            'tcorrel':ti.tc_}
+
             logger.info("[%s %s] Computing averages <dV/dl> and errors for %d lambda values.",
                         self.molecule, component, len(lambdas))
-            # for TI just get the average dv/dl value (in array column 1; col 0 is the time)
-            # (This can take a while if the XVG is now reading the array from disk first time)
-            # Use XVG class properties: first data in column 0!
-            Y = numpy.array([x.mean[0] for x in xvgs])
-            stdY = numpy.array([x.std[0]  for x in xvgs])
-            DY = numpy.array([x.error[0]  for x in xvgs])   # takes a while: computes correl.time
-            tc = numpy.array([x.tc[0]  for x in xvgs])
-            self.results.dvdl[component] = {'lambdas':lambdas, 'mean':Y, 'error':DY,
-                                            'stddev':stdY, 'tcorrel':tc}
-            # Combined Simpson rule integration:
-            # even="last" because dV/dl is smoother at the beginning so using trapezoidal
-            # integration there makes less of an error (one hopes...)
-            a = scipy.integrate.simps(Y, x=lambdas, even='last')
-            da = numkit.integration.simps_error(DY, x=lambdas, even='last')
+
+            a = ti.delta_f_.iloc[0,-1]
+            da = ti.d_delta_f_error_.iloc[0,-1]
             self.results.DeltaA[component] = QuantityWithError(a, da)
             GibbsFreeEnergy += self.results.DeltaA[component]  # error propagation is automagic!
 
@@ -938,7 +1002,7 @@ g
                 return False
         except AttributeError:
             return False
-        return numpy.all(numpy.array([len(xvgs) for (lambdas,xvgs) in self.results.xvg.values()]) > 0)
+        return numpy.all(numpy.array([len(xvgs) for (lambdas,xvgs,filenames) in self.results.xvg.values()]) > 0)
 
     def plot(self, **kwargs):
         """Plot the TI data with error bars.
@@ -1051,7 +1115,7 @@ class Goct(Gsolv):
                              description="decoupling vdw --> none",
                              label='VDW',
                              couple_lambda0='vdw', couple_lambda1='none',
-                             sc_alpha=0.5, sc_power=1.0, sc_sigma=0.3, # recommended values
+                             sc_alpha=0.5, sc_power=1, sc_sigma=0.3, # recommended values
                              lambdas=[0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6,  # defaults
                                       0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1],
                              ),

@@ -60,7 +60,6 @@ logger = logging.getLogger('mdpow.equil')
 #: minimum distance between solute and box surface (in nm)
 DIST = {'water': 1.0, 'octanol': 1.5, 'cyclohexane': 1.5}
 
-
 class Simulation(Journalled):
     """Simple MD simulation of a single compound molecule in water.
 
@@ -150,7 +149,7 @@ class Simulation(Journalled):
         # self.mdp: key = stage, value = path to MDP file
 
         # 'water' will choose the default ('tip4p'), other choices are
-        # 'tip3p', 'spc', 'spce', for water; no choices
+        # 'tip3p', 'spc', 'spce', 'm24', for water; no choices
         # available for 'cyclohexane' and 'octanol'
         solventmodel = kwargs.pop('solventmodel', None)
 
@@ -257,7 +256,7 @@ class Simulation(Journalled):
                 self.dirs[key] = assinglet([fn.replace(basedir, prefix) for fn in fns])
             except AttributeError:
                 pass
-        for key, fn in self.mdp:
+        for key, fn in self.mdp.items():
             try:
                 self.mdp[key] = fn.replace(basedir, prefix)
             except AttributeError:
