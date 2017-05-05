@@ -757,7 +757,8 @@ class Gsolv(Journalled):
             xvg_files = [self.dgdl_xvg(self.wdir(component, l)) for l in lambdas]
             self.results.xvg[component] = (numpy.array(lambdas),
                                            [XVG(xvg, permissive=self.permissive, stride=self.stride)
-                                            for xvg in xvg_files])
+                                            for xvg in xvg_files],
+                                            xvg_files)
         if autosave:
             self.save()
 
@@ -809,7 +810,7 @@ class Gsolv(Journalled):
                 return 0            # ... so we cannot conclude that it does contain bad ones
         corrupted = {}
         self._corrupted = {}        # debugging ...
-        for component, (lambdas, xvgs) in self.results.xvg.items():
+        for component, (lambdas, xvgs, filenames) in self.results.xvg.items():
             corrupted[component] = numpy.any([(_lencorrupted(xvg) > 0) for xvg in xvgs])
             self._corrupted[component] = dict(((l, _lencorrupted(xvg)) for l,xvg in izip(lambdas, xvgs)))
         return numpy.any([x for x in corrupted.values()])
@@ -893,6 +894,11 @@ class Gsolv(Journalled):
 
         .. _p526: http://books.google.co.uk/books?id=XmyO2oRUg0cC&pg=PA526
         """
+
+        from alchemlyb.parsing import gmx
+        from mdpow.estimators import TI
+        import pandas as pd
+
         stride = stride or self.stride
 
         if force or not self.has_dVdl():
@@ -908,35 +914,25 @@ class Gsolv(Journalled):
         else:
             logger.info("Analyzing stored data.")
 
-        # total free energy difference at const P (all simulations are done in NPT)
         GibbsFreeEnergy = QuantityWithError(0,0)
 
-        for component, (lambdas, xvgs) in self.results.xvg.items():
+        for component, (lambdas, xvgs, filenames) in self.results.xvg.items():
+
+            dHdl = pd.concat([gmx.extract_dHdl(f, T=300) for f in filenames])
+            dHdl = dHdl * 300 * kBOLTZ # undo dimensionless conversion from extract_dHdl
+            ti = TI()
+            ti.fit(dHdl, ncorrel=ncorrel)
+
+            self.results.dvdl[component] = {'lambdas':lambdas, 'mean':ti.means_, 
+                                            'error':ti.errors_,
+                                            'stddev':np.sqrt(ti.variances_), 
+                                            'tcorrel':ti.tc_}
+
             logger.info("[%s %s] Computing averages <dV/dl> and errors for %d lambda values.",
                         self.molecule, component, len(lambdas))
-            # for TI just get the average dv/dl value (in array column 1; col 0 is the time)
-            # (This can take a while if the XVG is now reading the array from disk first time)
-            # Use XVG class properties: first data in column 0!
-            Y = numpy.array([x.mean[0] for x in xvgs])
-            stdY = numpy.array([x.std[0]  for x in xvgs])
 
-            # compute auto correlation time and error estimate for independent samples
-            # (this can take a while). x.array[0] == time, x.array[1] == dHdl
-            # nstep is calculated to give ncorrel samples (or all samples if less than ncorrel are
-            # available)
-            tc_data = [numkit.timeseries.tcorrel(x.array[0], x.array[1],
-                                                 nstep=int(numpy.ceil(len(x.array[0])/float(ncorrel))))
-                                                 for x in xvgs]
-            DY = numpy.array([tc['sigma'] for tc in tc_data])
-            tc = numpy.array([tc['tc'] for tc in tc_data])
-
-            self.results.dvdl[component] = {'lambdas':lambdas, 'mean':Y, 'error':DY,
-                                            'stddev':stdY, 'tcorrel':tc}
-            # Combined Simpson rule integration:
-            # even="last" because dV/dl is smoother at the beginning so using trapezoidal
-            # integration there makes less of an error (one hopes...)
-            a = scipy.integrate.simps(Y, x=lambdas, even='last')
-            da = numkit.integration.simps_error(DY, x=lambdas, even='last')
+            a = ti.delta_f_.iloc[0,-1]
+            da = ti.d_delta_f_error_.iloc[0,-1]
             self.results.DeltaA[component] = QuantityWithError(a, da)
             GibbsFreeEnergy += self.results.DeltaA[component]  # error propagation is automagic!
 
@@ -1006,7 +1002,7 @@ class Gsolv(Journalled):
                 return False
         except AttributeError:
             return False
-        return numpy.all(numpy.array([len(xvgs) for (lambdas,xvgs) in self.results.xvg.values()]) > 0)
+        return numpy.all(numpy.array([len(xvgs) for (lambdas,xvgs,filenames) in self.results.xvg.values()]) > 0)
 
     def plot(self, **kwargs):
         """Plot the TI data with error bars.

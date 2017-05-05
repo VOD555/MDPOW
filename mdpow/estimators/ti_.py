@@ -26,7 +26,7 @@ class TI(alchemlyb.estimators.TI):
         into account.
     """
 
-    def fit(self, dHdl):
+    def fit(self, dHdl, ncorrel=25000):
         """
         Compute free energy differences between each state by integrating
         dHdl across lambda values.
@@ -48,7 +48,9 @@ class TI(alchemlyb.estimators.TI):
         # used to calculate mean
         means = dHdl.mean(level=dHdl.index.names[1:])
         variances = np.square(dHdl.sem(level=dHdl.index.names[1:]))
-        errors = self._correlated_error(dHdl)
+        correlation = self._correlated_error(dHdl)
+        errors = correlation[0]
+        tc = correlation[1]
 
         # obtain vector of delta lambdas between each state
         dl = means.reset_index()[means.index.names[:]].diff().iloc[1:].values
@@ -91,9 +93,14 @@ class TI(alchemlyb.estimators.TI):
                                        index=errors.index.values)
 
 
+        self.means_ = means.values
+        self.variances_ = variances_.values
+        self.tc_ = tc.values
+        self.errors_ = errors.values
+
         return self
 
-    def _correlated_error(dHdl):
+    def _correlated_error(dHdl, ncorrel):
         """Compute errors considering correlated data from time series.
 
         Parameters
@@ -108,12 +115,15 @@ class TI(alchemlyb.estimators.TI):
 
         errors = []
         lambdas = []
+        tcs = []
         for name, group in dHdl.groupby(level='fep-lambda'):
-            tc = numkit.timeseries.tcorrel(group.index.get_level_values('time').values,
-                                           group.values.flatten())
+            t = group.index.get_level_values('time').values
+            y = group.values.flatten()
+            tc = numkit.timeseries.tcorrel(t, y,  nstep=int(numpy.ceil(len(t)/float(ncorrel))))
             lambdas.append(name)
             errors.append(tc['sigma'])
+            tcs.append(tc['tc'])
 
         return pd.DataFrame(errors,
                             index=pd.Float64Index(lambdas, name='fep-lambda'),
-                            columns=['fep'])
+                            columns=['fep']), np.array(tcs)
