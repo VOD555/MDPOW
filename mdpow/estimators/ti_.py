@@ -94,13 +94,13 @@ class TI(alchemlyb.estimators.TI):
 
 
         self.means_ = means.values
-        self.variances_ = variances_.values
-        self.tc_ = tc.values
+        self.variances_ = variances.values
+        self.tc_ = tc
         self.errors_ = errors.values
 
         return self
 
-    def _correlated_error(dHdl, ncorrel):
+    def _correlated_error(self, dHdl, ncorrel=25000):
         """Compute errors considering correlated data from time series.
 
         Parameters
@@ -119,7 +119,7 @@ class TI(alchemlyb.estimators.TI):
         for name, group in dHdl.groupby(level='fep-lambda'):
             t = group.index.get_level_values('time').values
             y = group.values.flatten()
-            tc = numkit.timeseries.tcorrel(t, y,  nstep=int(numpy.ceil(len(t)/float(ncorrel))))
+            tc = numkit.timeseries.tcorrel(t, y,  nstep=int(np.ceil(len(t)/float(ncorrel))))
             lambdas.append(name)
             errors.append(tc['sigma'])
             tcs.append(tc['tc'])

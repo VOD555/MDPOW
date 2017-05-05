@@ -44,6 +44,7 @@ It uses Gromacs (http://www.gromacs.org) for the molecular dynamics
                         'GromacsWrapper>=0.5.1',
                         'numkit',
                         'six',
+                        'alchemlyb',
       ],
       setup_requires=['pytest-runner',],
       # alchemtest does not have a release yet

@@ -898,16 +898,17 @@ class Gsolv(Journalled):
         from alchemlyb.parsing import gmx
         from mdpow.estimators import TI
         import pandas as pd
+        import bz2
 
         stride = stride or self.stride
 
         if force or not self.has_dVdl():
             try:
-                self.collect(stride=stride, autosave=False)
+                self.collect(stride=stride, autosave=False, autocompress=False)
             except IOError as err:
                 if err.errno == errno.ENOENT:
                     self.convert_edr()
-                    self.collect(stride=stride, autosave=False)
+                    self.collect(stride=stride, autosave=False, autocompress=False)
                 else:
                     logger.exception()
                     raise
@@ -917,6 +918,8 @@ class Gsolv(Journalled):
         GibbsFreeEnergy = QuantityWithError(0,0)
 
         for component, (lambdas, xvgs, filenames) in self.results.xvg.items():
+            
+            
 
             dHdl = pd.concat([gmx.extract_dHdl(f, T=300) for f in filenames])
             dHdl = dHdl * 300 * kBOLTZ # undo dimensionless conversion from extract_dHdl
@@ -925,7 +928,7 @@ class Gsolv(Journalled):
 
             self.results.dvdl[component] = {'lambdas':lambdas, 'mean':ti.means_, 
                                             'error':ti.errors_,
-                                            'stddev':np.sqrt(ti.variances_), 
+                                            'stddev':numpy.sqrt(ti.variances_), 
                                             'tcorrel':ti.tc_}
 
             logger.info("[%s %s] Computing averages <dV/dl> and errors for %d lambda values.",
